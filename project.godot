@@ -1,0 +1,33 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="Melee Bots"
+config/description="AI personality brawl: 5v5 robots with rocks, bats, knives, swords and spears. Get knocked down and you drop your weapon. Part of the Precog sim suite."
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="disabled"
+
+[layer_names]
+
+3d_physics/layer_1="world"
+3d_physics/layer_2="robots"
+3d_physics/layer_3="items"
+3d_physics/layer_4="hitboxes"
+
+[physics]
+
+common/physics_ticks_per_second=60
+common/max_physics_steps_per_frame=64
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

@@ -1,0 +1,14 @@
+# Response headers this app needs, folded into its generated Caddy block by
+# /opt/scripts/deploy.sh.
+#
+# Godot 4's web export is built with thread support, so the runtime asks for
+# SharedArrayBuffer, and a browser only hands that out to a cross-origin
+# isolated document. Without both of these the page loads and then stops with
+# "The following features required to run Godot projects on the Web are
+# missing: Threads".
+#
+# Everything the page fetches is same-origin, so require-corp costs nothing
+# here. There are no third-party embeds, no analytics and no external fonts;
+# adding any would need a Cross-Origin-Resource-Policy on the other end.
+header Cross-Origin-Opener-Policy "same-origin"
+header Cross-Origin-Embedder-Policy "require-corp"
