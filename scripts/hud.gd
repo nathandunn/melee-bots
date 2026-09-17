@@ -9,6 +9,11 @@ signal speed_changed(scale: float)
 signal pause_toggled(paused: bool)
 
 const PRESET_LIST := ["Balanced", "Brawler", "Slinger", "Coward", "Tactician", "Guardian", "Random", "Custom"]
+## What a whole team can be set to, and what one robot can be set to ("Team" = follow the team).
+const TEAM_PERSONALITIES := ["Balanced", "Brawler", "Slinger", "Coward", "Tactician", "Guardian", "Random"]
+const TEAM_TYPES := ["Even", "Bruiser", "Runner", "Tank", "Sniper", "Ghost", "Random"]
+const PLAYER_PERSONALITIES := ["Team", "Balanced", "Brawler", "Slinger", "Coward", "Tactician", "Guardian", "Random"]
+const PLAYER_TYPES := ["Team", "Even", "Bruiser", "Runner", "Tank", "Sniper", "Ghost", "Random"]
 
 var manager: MatchManager
 var timer_label: Label
@@ -23,9 +28,15 @@ var results_box: VBoxContainer
 var results_title: Label
 var results_countdown: Label
 var next_row: HFlowContainer
-var preset_buttons: Array[OptionButton] = []
+var preset_buttons: Array[Button] = []
+var type_buttons: Array[Button] = []
+## [team][robot] -> the little icon button for that robot's type / personality
+var player_type_btns := [[], []]
+var player_pers_btns := [[], []]
 var sliders := [{}, {}]
 var slider_vals := [{}, {}]
+var type_sliders := [{}, {}]
+var type_slider_vals := [{}, {}]
 var speed_buttons: Array[Button] = []
 var teams_btn: Button
 var live_btn: Button
@@ -114,6 +125,14 @@ func setup(m: MatchManager) -> void:
 	batch_btn.text = "Batch x10"
 	batch_btn.pressed.connect(func(): _close_overlays(); batch_requested.emit(10))
 	row2.add_child(batch_btn)
+	var mute_btn := Button.new()
+	mute_btn.text = "Sound on"
+	mute_btn.toggle_mode = true
+	mute_btn.tooltip_text = "Every sound in this game is synthesised in code - there is not an audio file in the repo"
+	mute_btn.toggled.connect(func(on: bool):
+		Sfx.set_muted(on)
+		mute_btn.text = "Sound off" if on else "Sound on")
+	row2.add_child(mute_btn)
 
 	# ---- live list (toggle)
 	live_label = Label.new()
@@ -195,7 +214,7 @@ func _build_teams_overlay() -> void:
 	teams_scroll = parts[1]
 	var content: VBoxContainer = parts[2]
 	var hint := Label.new()
-	hint.text = "Pick a preset or drag the sliders, then Start match. Each robot gets the team personality with a little jitter."
+	hint.text = "Set a whole team at once, or give any single robot its own type and personality on the row of five. Hover an icon for what it does, or press ? for the whole key."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", 13)
 	content.add_child(hint)
@@ -210,17 +229,19 @@ func _build_teams_overlay() -> void:
 	arm_title.add_theme_font_size_override("font_size", 18)
 	content.add_child(arm_title)
 	var arm_hint := Label.new()
-	arm_hint.text = "Rocks are thrown (three sizes). Bats floor people, knives are quick, swords hit hardest, spears reach furthest (knives and spears can be thrown too). Get knocked down and you drop what you hold."
+	arm_hint.text = "One thing per robot, scattered at the start, and anything on the floor can be picked up by anyone. Hover a name for what it does. Get knocked down and you drop what you hold."
 	arm_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	arm_hint.add_theme_font_size_override("font_size", 13)
 	content.add_child(arm_hint)
 	var arm_row := HFlowContainer.new()
 	arm_row.add_theme_constant_override("h_separation", 16)
 	content.add_child(arm_row)
-	for k: String in ["rock", "bat", "knife", "sword", "spear"]:
+	for k: String in MatchManager.KIND_ORDER:
 		var cell := HBoxContainer.new()
 		var kl := Label.new()
-		kl.text = k.capitalize() + "s"
+		kl.text = ("Babies" if k == "baby" else k.capitalize() + "s")
+		kl.tooltip_text = String(Weapon.BLURB.get(k, ""))
+		kl.mouse_filter = Control.MOUSE_FILTER_STOP
 		cell.add_child(kl)
 		var sb := SpinBox.new()
 		sb.min_value = 0
@@ -240,20 +261,60 @@ func _build_teams_overlay() -> void:
 
 func _build_team_panel(t: int) -> Control:
 	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var head := HBoxContainer.new()
 	var title := Label.new()
 	title.text = MatchManager.TEAM_NAMES[t]
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", MatchManager.TEAM_COLORS[t].lightened(0.2))
-	box.add_child(title)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(title)
+	head.add_child(_key_button())
+	box.add_child(head)
 
-	var ob := OptionButton.new()
-	for p in PRESET_LIST:
-		ob.add_item(p)
-	ob.select(0)
-	ob.item_selected.connect(func(idx: int): _on_preset(t, PRESET_LIST[idx]))
-	box.add_child(ob)
-	preset_buttons.append(ob)
+	# ---- the whole team in one go
+	var whole := GridContainer.new()
+	whole.columns = 2
+	whole.add_theme_constant_override("h_separation", 8)
+	box.add_child(whole)
+	whole.add_child(_mini_label("Whole team type"))
+	var tb := _picker(t, -1, true)
+	whole.add_child(tb)
+	type_buttons.append(tb)
+	whole.add_child(_mini_label("Whole team personality"))
+	var pb := _picker(t, -1, false)
+	whole.add_child(pb)
+	preset_buttons.append(pb)
 
+	# ---- and the five of them, one column each
+	var per := Label.new()
+	per.text = "Each robot"
+	per.add_theme_font_size_override("font_size", 13)
+	per.add_theme_color_override("font_color", Color(0.78, 0.78, 0.84))
+	box.add_child(per)
+	var grid := GridContainer.new()
+	grid.columns = MatchManager.TEAM_SIZE + 1
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 2)
+	box.add_child(grid)
+	grid.add_child(_mini_label(""))
+	for i in MatchManager.TEAM_SIZE:
+		var nl := _mini_label("%s%d" % [MatchManager.TEAM_NAMES[t][0], i + 1])
+		nl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		nl.custom_minimum_size.x = 34
+		grid.add_child(nl)
+	grid.add_child(_mini_label("Type"))
+	for i in MatchManager.TEAM_SIZE:
+		var b := _picker(t, i, true)
+		player_type_btns[t].append(b)
+		grid.add_child(b)
+	grid.add_child(_mini_label("Person."))
+	for i in MatchManager.TEAM_SIZE:
+		var b := _picker(t, i, false)
+		player_pers_btns[t].append(b)
+		grid.add_child(b)
+
+	box.add_child(_section("Personality (whole team)"))
 	for trait_name in Personality.TRAITS:
 		var row := HBoxContainer.new()
 		var l := Label.new()
@@ -265,7 +326,7 @@ func _build_team_panel(t: int) -> Control:
 		s.min_value = 0.0
 		s.max_value = 1.0
 		s.step = 0.05
-		s.custom_minimum_size = Vector2(150, 28)
+		s.custom_minimum_size = Vector2(150, 26)
 		s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		s.value_changed.connect(func(v: float): _on_slider(t, trait_name, v))
 		row.add_child(s)
@@ -275,7 +336,184 @@ func _build_team_panel(t: int) -> Control:
 		box.add_child(row)
 		sliders[t][trait_name] = s
 		slider_vals[t][trait_name] = vl
+
+	box.add_child(_section("Type (whole team) - five shares of one budget"))
+	for prop in RobotType.PROPS:
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		l.text = prop
+		l.custom_minimum_size.x = 84
+		l.tooltip_text = RobotType.PROP_HELP[prop]
+		row.add_child(l)
+		var s := HSlider.new()
+		s.min_value = 0.0
+		s.max_value = 0.8
+		s.step = 0.02
+		s.custom_minimum_size = Vector2(150, 26)
+		s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		s.value_changed.connect(func(v: float): _on_type_slider(t, prop, v))
+		row.add_child(s)
+		var vl := Label.new()
+		vl.custom_minimum_size.x = 36
+		row.add_child(vl)
+		box.add_child(row)
+		type_sliders[t][prop] = s
+		type_slider_vals[t][prop] = vl
 	return box
+
+
+func _mini_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color(0.8, 0.8, 0.86))
+	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return l
+
+
+func _section(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color(0.62, 0.66, 0.74))
+	return l
+
+
+# ------------------------------------------------------- the icon pickers and their key
+
+## One icon-only button that opens a menu of icons and names. Used four ways: whole-team type
+## and personality, and the same two for a single robot (idx >= 0), where "Team" is an option.
+func _picker(t: int, idx: int, is_type: bool) -> Button:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(34, 28)
+	b.expand_icon = false
+	var options: Array = []
+	if idx < 0:
+		options = (TEAM_TYPES if is_type else TEAM_PERSONALITIES).duplicate()
+	else:
+		options = (PLAYER_TYPES if is_type else PLAYER_PERSONALITIES).duplicate()
+	var pm := PopupMenu.new()
+	for i in options.size():
+		var n: String = options[i]
+		var tex: Texture2D = Icons.type_icon(n) if is_type else Icons.personality_icon(n)
+		pm.add_icon_item(tex, n, i)
+		pm.set_item_tooltip(i, _describe(n, is_type))
+	pm.id_pressed.connect(func(id: int): _on_pick(t, idx, is_type, String(options[id])))
+	b.add_child(pm)
+	b.pressed.connect(func():
+		var origin := b.get_screen_transform().origin
+		pm.popup(Rect2i(Vector2i(int(origin.x), int(origin.y + b.size.y)), Vector2i(0, 0))))
+	return b
+
+
+## The key, as a panel of icon / name / what-it-does rows - the same thing the tooltips say,
+## all in one place, for anyone who would rather read than hover.
+func _key_button() -> Button:
+	var b := Button.new()
+	b.text = "?"
+	b.tooltip_text = "What the icons mean"
+	b.custom_minimum_size = Vector2(28, 26)
+	var pop := PopupPanel.new()
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = Color(0.07, 0.08, 0.11, 1.0)      # opaque: it sits over the setup panel
+	psb.border_color = Color(0.4, 0.44, 0.52)
+	psb.set_border_width_all(1)
+	psb.set_corner_radius_all(6)
+	psb.set_content_margin_all(12)
+	pop.add_theme_stylebox_override("panel", psb)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	pop.add_child(vb)
+	for pair in [["Types - what a robot is", TEAM_TYPES, true], ["Personalities - how it behaves", TEAM_PERSONALITIES, false]]:
+		var head := Label.new()
+		head.text = String(pair[0])
+		head.add_theme_font_size_override("font_size", 15)
+		vb.add_child(head)
+		var grid := GridContainer.new()
+		grid.columns = 3
+		grid.add_theme_constant_override("h_separation", 8)
+		grid.add_theme_constant_override("v_separation", 3)
+		vb.add_child(grid)
+		var is_type: bool = pair[2]
+		for n: String in pair[1]:
+			var tr := TextureRect.new()
+			tr.texture = Icons.type_icon(n) if is_type else Icons.personality_icon(n)
+			tr.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+			tr.custom_minimum_size = Vector2(22, 22)
+			grid.add_child(tr)
+			grid.add_child(_cell(n, true, Color.WHITE, 13))
+			var lines := _describe(n, is_type).split("\n")
+			grid.add_child(_cell(lines[lines.size() - 1], false, Color(0.82, 0.82, 0.88), 13))
+	var team_note := Label.new()
+	team_note.text = "A robot set to Team (the ring) just follows whatever the team is set to."
+	team_note.add_theme_font_size_override("font_size", 13)
+	team_note.add_theme_color_override("font_color", Color(0.75, 0.75, 0.82))
+	vb.add_child(team_note)
+	b.add_child(pop)
+	b.pressed.connect(func():
+		var origin := b.get_screen_transform().origin
+		var x := maxi(int(origin.x) - 260, 8)
+		pop.popup(Rect2i(Vector2i(x, int(origin.y + b.size.y)), Vector2i(0, 0))))
+	return b
+
+
+func _describe(n: String, is_type: bool) -> String:
+	if n == "Team":
+		return "Team\nFollow whatever the whole team is set to"
+	if n == "Random":
+		return "Random\nRolled fresh for every robot at the start of the match"
+	if is_type:
+		return "%s\n%s" % [n, String(RobotType.TYPE_HELP.get(n, "A mix of the five properties"))]
+	var bits := PackedStringArray()
+	var preset: Dictionary = Personality.PRESETS.get(n, {})
+	for tr in Personality.TRAITS:
+		if float(preset.get(tr, 0.5)) >= 0.7:
+			bits.append(tr)
+	return "%s\nHigh %s" % [n, ", ".join(bits)] if bits.size() > 0 else "%s\nNo strong leanings" % n
+
+
+func _on_pick(t: int, idx: int, is_type: bool, name_picked: String) -> void:
+	if idx < 0:
+		# the whole team: set the default and clear every robot back to following it
+		if is_type:
+			manager.team_types[t] = RobotType.preset(name_picked)
+			manager.team_type_names[t] = name_picked
+			for i in MatchManager.TEAM_SIZE:
+				manager.player_type[t][i] = ""
+		else:
+			manager.team_personalities[t] = Personality.preset(name_picked)
+			manager.team_preset_names[t] = name_picked
+			for i in MatchManager.TEAM_SIZE:
+				manager.player_personality[t][i] = ""
+	else:
+		var v := "" if name_picked == "Team" else name_picked
+		if is_type:
+			manager.player_type[t][idx] = v
+		else:
+			manager.player_personality[t][idx] = v
+	_refresh_sliders()
+
+
+func _refresh_pickers() -> void:
+	for t in 2:
+		var tn: String = manager.team_type_names[t]
+		type_buttons[t].icon = Icons.type_icon(tn)
+		type_buttons[t].tooltip_text = "Whole team type: " + _describe(tn, true)
+		var pn: String = manager.team_preset_names[t]
+		preset_buttons[t].icon = Icons.personality_icon(pn)
+		preset_buttons[t].tooltip_text = "Whole team personality: " + _describe(pn, false)
+		for i in MatchManager.TEAM_SIZE:
+			var rn := "%s%d" % [MatchManager.TEAM_NAMES[t][0], i + 1]
+			var pt: String = String(manager.player_type[t][i])
+			var b: Button = player_type_btns[t][i]
+			b.icon = Icons.type_icon(pt if pt != "" else "Team")
+			b.tooltip_text = "%s type: %s" % [rn, _describe(pt if pt != "" else "Team", true)] \
+				+ ("\n(the team is %s)" % tn if pt == "" else "")
+			var pp: String = String(manager.player_personality[t][i])
+			var b2: Button = player_pers_btns[t][i]
+			b2.icon = Icons.personality_icon(pp if pp != "" else "Team")
+			b2.tooltip_text = "%s personality: %s" % [rn, _describe(pp if pp != "" else "Team", false)] \
+				+ ("\n(the team is %s)" % pn if pp == "" else "")
 
 
 func _build_results_overlay() -> void:
@@ -323,7 +561,7 @@ func _relayout() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	var w := vs.x
 	var h := vs.y
-	teams_scroll.custom_minimum_size = Vector2(minf(820.0, w - 40.0), minf(470.0, h - 110.0))
+	teams_scroll.custom_minimum_size = Vector2(minf(880.0, w - 40.0), minf(620.0, h - 120.0))
 	# results share the screen with the celebration: right half in landscape, lower part in portrait
 	var rc: Control = results_overlay.get_child(0)
 	if w > h:
@@ -342,24 +580,23 @@ func _relayout() -> void:
 
 # ---------------------------------------------------------------- team setup
 
-func _on_preset(t: int, preset_name: String) -> void:
-	if preset_name == "Custom":
-		manager.team_preset_names[t] = "Custom"
-		return
-	manager.team_personalities[t] = Personality.preset(preset_name)
-	manager.team_preset_names[t] = preset_name
-	_refresh_sliders()
-
-
 func _on_slider(t: int, trait_name: String, v: float) -> void:
 	if _updating:
 		return
 	manager.team_personalities[t].set_trait(trait_name, v)
 	slider_vals[t][trait_name].text = "%.2f" % v
-	var lbl := manager.team_personalities[t].label()
-	manager.team_preset_names[t] = lbl
-	var idx := PRESET_LIST.find(lbl)
-	preset_buttons[t].select(idx if idx >= 0 else PRESET_LIST.size() - 1)
+	manager.team_preset_names[t] = manager.team_personalities[t].label()
+	_refresh_pickers()
+
+
+## Dragging one type slider takes the difference out of the other four in proportion - the
+## budget is the point, so it has to be visible.
+func _on_type_slider(t: int, prop: String, v: float) -> void:
+	if _updating:
+		return
+	manager.team_types[t].set_and_rebalance(prop, v)
+	manager.team_type_names[t] = manager.team_types[t].label()
+	_refresh_sliders()
 
 
 func _refresh_sliders() -> void:
@@ -369,9 +606,12 @@ func _refresh_sliders() -> void:
 		for trait_name in Personality.TRAITS:
 			sliders[t][trait_name].value = p.get_trait(trait_name)
 			slider_vals[t][trait_name].text = "%.2f" % p.get_trait(trait_name)
-		var idx := PRESET_LIST.find(manager.team_preset_names[t])
-		preset_buttons[t].select(idx if idx >= 0 else PRESET_LIST.size() - 1)
+		var ty := manager.team_types[t]
+		for prop in RobotType.PROPS:
+			type_sliders[t][prop].value = ty.get_prop(prop)
+			type_slider_vals[t][prop].text = "%.2f" % ty.get_prop(prop)
 	_updating = false
+	_refresh_pickers()
 
 
 func _set_speed(s: float) -> void:
@@ -391,12 +631,12 @@ func _process(delta: float) -> void:
 	timer_label.text = "%d:%02d" % [int(tl) / 60, int(tl) % 60]
 	for t in 2:
 		team_labels[t].text = "%s %d/%d  HP %d%%" % [MatchManager.TEAM_NAMES[t], manager.alive_count(t), MatchManager.TEAM_SIZE,
-			int(round(100.0 * manager.team_hp(t) / (Robot.MAX_HP * MatchManager.TEAM_SIZE)))]
+			int(round(100.0 * manager.team_hp(t) / manager.team_max_hp(t)))]
 	if live_label.visible:
 		var lines := PackedStringArray()
 		for r in manager.robots:
 			var rk := (" [" + r.held.kind_name() + "]") if r.held != null else ""
-			lines.append("%s %3d%% %s%s" % [r.robot_name, int(round(100.0 * r.hp / Robot.MAX_HP)), r.action, rk])
+			lines.append("%s %3d%% %s%s" % [r.robot_name, int(round(100.0 * r.hp / r.max_hp)), r.action, rk])
 		live_label.text = "\n".join(lines)
 
 
@@ -451,10 +691,10 @@ func show_result(res: Dictionary) -> void:
 	results_box.add_child(grid)
 	grid.add_child(_cell(""))
 	for t in 2:
-		grid.add_child(_cell("%s (%s)" % [MatchManager.TEAM_NAMES[t], res["presets"][t]], true, MatchManager.TEAM_COLORS[t].lightened(0.2), 15))
+		grid.add_child(_cell("%s (%s / %s)" % [MatchManager.TEAM_NAMES[t], res["presets"][t], res.get("types", ["Even", "Even"])[t]], true, MatchManager.TEAM_COLORS[t].lightened(0.2), 15))
 	var rows := [
 		["Alive", func(t): return "%d / %d" % [res["alive"][t], MatchManager.TEAM_SIZE]],
-		["Team HP left", func(t): return "%d%%" % int(round(100.0 * res["hp"][t] / (Robot.MAX_HP * MatchManager.TEAM_SIZE)))],
+		["Team HP left", func(t): return "%d%%" % int(round(100.0 * res["hp"][t] / maxf(float(res.get("max_hp", [1.0, 1.0])[t]), 1.0)))],
 		["Throws / hits", func(t): return "%d / %d  (%s)" % [s["throws"][t], s["rock_hits"][t], _pct(s["rock_hits"][t], s["throws"][t])]],
 		["Punches / hits", func(t): return "%d / %d  (%s)" % [s["punches"][t], s["punch_hits"][t], _pct(s["punch_hits"][t], s["punches"][t])]],
 		["Kicks / hits", func(t): return "%d / %d  (%s)" % [s["kicks"][t], s["kick_hits"][t], _pct(s["kick_hits"][t], s["kicks"][t])]],
@@ -484,15 +724,16 @@ func show_result(res: Dictionary) -> void:
 	# per-robot table
 	results_box.add_child(_cell("Robots", true, Color.WHITE, 16))
 	var rg := GridContainer.new()
-	rg.columns = 13
+	rg.columns = 14
 	rg.add_theme_constant_override("h_separation", 14)
 	rg.add_theme_constant_override("v_separation", 2)
 	results_box.add_child(rg)
-	for hdr in ["Robot", "Type", "Damage", "Thrown", "Punch", "Kick", "Weapon", "Throw acc", "Punch acc", "Kick acc", "Swing acc", "KD", "Kills / HP"]:
+	for hdr in ["Robot", "Type", "Personality", "Damage", "Thrown", "Punch", "Kick", "Weapon", "Throw acc", "Punch acc", "Kick acc", "Swing acc", "KD", "Kills / HP"]:
 		rg.add_child(_cell(hdr, false, Color(0.75, 0.75, 0.8), 13))
 	for r in res["robots"]:
 		var col: Color = MatchManager.TEAM_COLORS[r["team"]].lightened(0.25)
 		rg.add_child(_cell(r["name"], true, col))
+		rg.add_child(_cell(String(r.get("type", "Even"))))
 		rg.add_child(_cell(r["preset"]))
 		rg.add_child(_cell("%d" % int(r["dmg_rock"] + r["dmg_punch"] + r.get("dmg_kick", 0.0) + r.get("dmg_melee", 0.0))))
 		rg.add_child(_cell("%d" % int(r["dmg_rock"])))
@@ -504,7 +745,7 @@ func show_result(res: Dictionary) -> void:
 		rg.add_child(_cell("%d/%d %s" % [r.get("kick_hits", 0), r.get("kicks", 0), _pct(r.get("kick_hits", 0), r.get("kicks", 0))]))
 		rg.add_child(_cell("%d/%d %s" % [r.get("swing_hits", 0), r.get("swings", 0), _pct(r.get("swing_hits", 0), r.get("swings", 0))]))
 		rg.add_child(_cell("%d" % r["knockdowns"]))
-		rg.add_child(_cell("%d / %s" % [r["kills"], ("%d%%" % int(round(100.0 * r["hp"] / Robot.MAX_HP))) if r["alive"] else "dead"]))
+		rg.add_child(_cell("%d / %s" % [r["kills"], ("%d%%" % int(round(100.0 * r["hp"] / maxf(float(r.get("max_hp", Robot.MAX_HP)), 1.0)))) if r["alive"] else "dead"]))
 
 	results_overlay.visible = true
 	results_scroll.scroll_vertical = 0

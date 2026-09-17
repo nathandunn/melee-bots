@@ -53,6 +53,16 @@ var team := 0
 var team_color := Color.RED
 var robot_name := "bot"
 var personality: Personality
+## What it is, as against how it behaves: five properties adding up to 1 (see robot_type.gd).
+## Everything below it is derived in apply_type(); an even type reproduces the old constants.
+var robot_type: RobotType
+var type_name := ""   # set by the manager; falls back to the closest preset
+var max_hp := MAX_HP
+var move_speed := SPEED
+var accuracy := ACCURACY
+var dmg_mult := 1.0
+var windup_mult := 1.0      # < 1 is quicker off the mark
+var react_mult := 1.0       # < 1 sees it coming sooner
 var hp := MAX_HP
 var alive := true
 var held: Weapon = null
@@ -136,10 +146,37 @@ func _ready() -> void:
 		rng.randomize()
 	if personality == null:
 		personality = Personality.preset("Balanced")
+	if robot_type == null:
+		robot_type = RobotType.preset("Even")
+	apply_type()
 	decide_timer = rng.randf_range(0.0, DECISION_INTERVAL)
 	punch_timer = rng.randf_range(0.0, PUNCH_COOLDOWN)
 	wander_point = global_position
 	_build_body()
+
+
+## Turn the five properties into the numbers the rest of the file already uses. Each spans a
+## range around the original constant, and an even 0.2 share lands exactly on it - so a field
+## of Even robots fights precisely the match it always did.
+func apply_type() -> void:
+	var brawn := robot_type.factor("brawn")
+	var spd := robot_type.factor("speed")
+	var grit := robot_type.factor("grit")
+	var reflex := robot_type.factor("reflex")
+	var aim := robot_type.factor("aim")
+	# The spans below were levelled by playing each specialist against Even ten matches at a
+	# time. The first pass had reflex and speed running away with it (in a game where the man
+	# who connects first keeps his weapon, a short wind-up is worth more than a big hit) and
+	# brawn and aim worth almost nothing, so their reach was widened and the other two reined in.
+	max_hp = MAX_HP * clampf(0.68 + 0.32 * grit, 0.5, 1.9)
+	move_speed = SPEED * clampf(0.78 + 0.22 * spd, 0.6, 1.4)
+	dmg_mult = clampf(0.5 + 0.5 * brawn, 0.4, 2.0)
+	accuracy = clampf(0.38 + 0.32 * aim, 0.3, 0.9)
+	windup_mult = clampf(1.2 - 0.2 * reflex, 0.6, 1.4)
+	react_mult = clampf(1.22 - 0.22 * reflex, 0.55, 1.45)
+	hp = max_hp
+	if type_name == "":
+		type_name = robot_type.label()
 
 
 # ---------------------------------------------------------------- body
@@ -326,7 +363,7 @@ func _capsule_shape(r: float, h: float) -> CapsuleShape3D:
 func _update_label() -> void:
 	if label == null:
 		return
-	var f := clampf(hp / MAX_HP, 0.0, 1.0)
+	var f := clampf(hp / max_hp, 0.0, 1.0)
 	if alive:
 		label.text = "%s %s" % [robot_name, personality.label()]
 		label.modulate = Color.WHITE
@@ -429,7 +466,7 @@ func _physics_process(delta: float) -> void:
 		facing.y = 0.0
 		if facing.length_squared() > 0.01 and mv.dot(facing.normalized()) < -0.3:
 			speed_mult *= 0.78
-	velocity = mv * SPEED * speed_mult
+	velocity = mv * move_speed * speed_mult
 	velocity.y = 0.0
 	var before := global_position
 	move_and_slide()
@@ -438,7 +475,7 @@ func _physics_process(delta: float) -> void:
 	# (b) inching back and forth behind a block: wanted to move for a second and a half and got nowhere.
 	# Either way pick a random heading (60-150 degrees off) and hold it for a random while.
 	var wanted := move_dir.length_squared() > 0.001
-	if wanted and _detour_timer <= 0.0 and before.distance_to(global_position) < SPEED * delta * 0.3:
+	if wanted and _detour_timer <= 0.0 and before.distance_to(global_position) < move_speed * delta * 0.3:
 		stuck_timer += delta
 		if stuck_timer > 0.3:
 			_start_detour(mv)
@@ -579,7 +616,7 @@ func _lane_blocked(target_pos: Vector3) -> bool:
 	if len < 0.5:
 		return false
 	var dirv := line / len
-	var margin := 0.9 + 0.8 * (1.0 - ACCURACY)
+	var margin := 0.9 + 0.8 * (1.0 - accuracy)
 	var speed := held.throw_speed() if held != null else 18.0
 	for m: Robot in manager.alive_robots():
 		if m.team != team or m == self:
@@ -774,7 +811,7 @@ func _mate_in_trouble() -> Dictionary:
 		if fd > reach:
 			continue
 		var u := (1.0 - fd / reach) * 0.6 + 0.4
-		u *= 0.7 + 0.6 * (1.0 - m.hp / MAX_HP)
+		u *= 0.7 + 0.6 * (1.0 - m.hp / m.max_hp)
 		if m.down_timer > 0.0:
 			u *= 1.4
 		u *= clampf(1.3 - md / 24.0, 0.3, 1.0)
@@ -808,6 +845,9 @@ func _item_value(w: Weapon, rock_love: float) -> float:
 		Weapon.Kind.SPEAR: return 0.9 + 0.2 * rock_love
 		Weapon.Kind.BAT: return 0.85
 		Weapon.Kind.KNIFE: return 0.6 + 0.2 * rock_love
+		Weapon.Kind.BOTTLE: return 0.55 + 0.15 * rock_love
+		Weapon.Kind.CAT: return 0.5 + 0.8 * rock_love     # a thrower's dream; useless to a boxer
+		Weapon.Kind.BABY: return 0.34 + 0.6 * rock_love   # it barely hurts, but it never misses a laugh
 		_: return 0.45 + 0.7 * rock_love
 
 
@@ -827,7 +867,7 @@ func _incoming_threat() -> Dictionary:
 			if _can_see(rk.global_position):
 				var first := not _rock_notice.has(rk)
 				var notice_p := 0.92 if first else 0.6
-				var reaction := 0.08 + (1.0 - caution) * 0.2
+				var reaction := (0.08 + (1.0 - caution) * 0.2) * react_mult
 				_rock_notice[rk] = (manager.elapsed + reaction) if rng.randf() < notice_p else -1.0
 			else:
 				_rock_notice[rk] = -1.0
@@ -886,7 +926,7 @@ func _decide() -> void:
 	var threat := _incoming_threat()
 	var rock := _nearest_free_item() if held == null else null
 	var rdist := _flat_dist(rock.global_position) if rock != null else INF
-	var hpf := hp / MAX_HP
+	var hpf := hp / max_hp
 	var centroid := _team_centroid()
 	var cdist := _flat_dist(centroid)
 	var low_threshold := 0.2 + 0.4 * survival
@@ -897,7 +937,7 @@ func _decide() -> void:
 	var flee_sense := 1.0
 	if enemy != null:
 		flee_sense = clampf(1.0 - (edist - 12.0) / 10.0, 0.1, 1.0) \
-			* clampf(0.5 + enemy.hp / MAX_HP - hpf, 0.15, 1.0) \
+			* clampf(0.5 + enemy.hp / enemy.max_hp - hpf, 0.15, 1.0) \
 			* clampf(manager.time_left / manager.MATCH_TIME + 0.35, 0.35, 1.0)
 
 	var scores := {}
@@ -1203,7 +1243,6 @@ func _pickup(rock: Weapon) -> void:
 func _throw_at(target: Robot) -> void:
 	if held == null:
 		return
-	var accuracy := ACCURACY
 	var origin := to_global(HAND_POS)
 	var speed := held.throw_speed()
 	var tpos := target.global_position + Vector3(0, 0.35 if target.down_timer > 0.0 else 1.1, 0)
@@ -1233,8 +1272,10 @@ func _throw_at(target: Robot) -> void:
 ## puncher's accuracy - decides whether it connects.
 func _punch() -> void:
 	punch_timer = PUNCH_COOLDOWN
-	_swing = 0.2 + PUNCH_WINDUP
-	_punch_pending = PUNCH_WINDUP
+	_sfx("swing", 1.25, -10.0)
+	var wu := PUNCH_WINDUP * windup_mult
+	_swing = 0.2 + wu
+	_punch_pending = wu
 	for r in _in_fist():
 		r.notice_punch(self)
 
@@ -1258,9 +1299,11 @@ func _weapon_swing(target: Robot) -> void:
 	if held == null or not held.is_melee():
 		return
 	swing_timer = held.stat("cooldown")
-	_swing_pending = held.stat("windup")
-	_swing_anim = held.stat("windup") + 0.25
-	_swing = 0.2 + held.stat("windup")
+	_sfx("swing", 0.8 if held.stat("reach") > 2.2 else 1.15, -5.0)
+	var wu := held.stat("windup") * windup_mult
+	_swing_pending = wu
+	_swing_anim = wu + 0.25
+	_swing = 0.2 + wu
 	if target != null:
 		target.notice_punch(self)
 		face_point = target.global_position
@@ -1285,26 +1328,31 @@ func _weapon_land() -> void:
 		if d <= reach and _facing(r.global_position if r.down_timer <= 0.0 else r.corpse_position()):
 			hits[r] = 2
 	for r in hits:
-		if rng.randf() > 0.55 + 0.45 * ACCURACY:
+		if rng.randf() > 0.55 + 0.45 * accuracy:
 			continue  # swung and missed
 		landed = true
 		var victim: Robot = r
 		var quality := minf(float(hits[r]), float(PUNCH_FULL_HITBOXES)) / float(PUNCH_FULL_HITBOXES)
 		if victim.down_timer > 0.0:
 			# a blow to a man on the floor: reduced, but he stays down longer
-			victim.take_damage(MAX_HP * frac * 0.6, "melee", self, hits[r])
+			victim.take_damage(MAX_HP * frac * 0.6 * dmg_mult, "melee", self, hits[r])
 			victim.down_timer += STOMP_EXTRA_DOWN
 			if victim.ragdoll != null and is_instance_valid(victim.ragdoll):
 				victim.ragdoll.shove(Vector3(0, 6.0, 0))
 			continue
-		victim.take_damage(MAX_HP * frac * quality, "melee", self, hits[r])
+		victim.take_damage(MAX_HP * frac * quality * dmg_mult, "melee", self, hits[r])
 		var floored := rng.randf() < kd * quality
 		var away: Vector3 = victim.global_position - global_position
 		away.y = 0.0
 		away = away.normalized() if away.length_squared() > 0.01 else -global_transform.basis.z
 		var impulse: Vector3 = away * (12.0 + 30.0 * quality) + Vector3(0, 4.0 + 5.0 * quality, 0)
 		victim.knock_down(PUNCH_KNOCKDOWN_TIME if floored else PUNCH_FLOP_TIME, self, "melee", impulse)
+	if landed:
+		_sfx("clang" if w.kind != Weapon.Kind.BOTTLE else "smash", randf_range(0.92, 1.12))
 	swung.emit(self, landed, w.kind_name())
+	# a bottle is a one-blow weapon: land it and you are holding the neck and nothing else
+	if landed and w.shatters():
+		w.shatter()
 	if personality.get_trait("caution") >= 0.8 and _escape_open():
 		_flee_timer = 1.6
 		decide_timer = 0.0
@@ -1314,8 +1362,10 @@ func _weapon_land() -> void:
 ## hip - longer reach, slower, and the only way to hurt a man who is already on the floor.
 func _kick(target: Robot) -> void:
 	kick_timer = KICK_COOLDOWN
-	_kick_pending = KICK_WINDUP
-	_kick_anim = KICK_WINDUP + 0.25
+	_sfx("swing", 1.05, -9.0)
+	var wu := KICK_WINDUP * windup_mult
+	_kick_pending = wu
+	_kick_anim = wu + 0.25
 	_kick_target = target
 	if target != null and target.down_timer <= 0.0:
 		target.notice_punch(self)
@@ -1337,9 +1387,9 @@ func _stomp_or_kick_land() -> void:
 	_kick_target = null
 	var landed := false
 	if t != null and is_instance_valid(t) and t.alive and t.down_timer > 0.0:
-		if _flat_dist(t.corpse_position()) <= KICK_REACH + 0.3 and rng.randf() < 0.55 + 0.45 * ACCURACY:
+		if _flat_dist(t.corpse_position()) <= KICK_REACH + 0.3 and rng.randf() < 0.55 + 0.45 * accuracy:
 			landed = true
-			t.take_damage(MAX_HP * STOMP_FRAC, "kick", self, 1)
+			t.take_damage(MAX_HP * STOMP_FRAC * dmg_mult, "kick", self, 1)
 			t.down_timer += STOMP_EXTRA_DOWN
 			if t.ragdoll != null and is_instance_valid(t.ragdoll):
 				var away: Vector3 = t.corpse_position() - global_position
@@ -1352,11 +1402,11 @@ func _stomp_or_kick_land() -> void:
 		if t != null and is_instance_valid(t) and t.alive and not hits.has(t) and _flat_dist(t.global_position) <= KICK_REACH and _facing(t.global_position):
 			hits[t] = 2
 		for r in hits:
-			if rng.randf() > 0.5 + 0.45 * ACCURACY:
+			if rng.randf() > 0.5 + 0.45 * accuracy:
 				continue  # swung a leg at air
 			landed = true
 			var quality := minf(float(hits[r]), float(PUNCH_FULL_HITBOXES)) / float(PUNCH_FULL_HITBOXES)
-			r.take_damage(MAX_HP * PUNCH_MAX_FRAC * quality, "kick", self, hits[r])
+			r.take_damage(MAX_HP * PUNCH_MAX_FRAC * quality * dmg_mult, "kick", self, hits[r])
 			var floored := rng.randf() < KICK_KNOCKDOWN_CHANCE * quality
 			var victim: Robot = r
 			var away: Vector3 = victim.global_position - global_position
@@ -1364,6 +1414,8 @@ func _stomp_or_kick_land() -> void:
 			away = away.normalized() if away.length_squared() > 0.01 else -global_transform.basis.z
 			var impulse: Vector3 = away * (14.0 + 28.0 * quality) + Vector3(0, 4.0 + 5.0 * quality, 0)
 			victim.knock_down(PUNCH_KNOCKDOWN_TIME if floored else PUNCH_FLOP_TIME, self, "kick", impulse)
+	if landed:
+		_sfx("thud", randf_range(0.85, 1.0))
 	kicked.emit(self, landed)
 	if personality.get_trait("caution") >= 0.8 and _escape_open():
 		_flee_timer = 1.6
@@ -1371,7 +1423,6 @@ func _stomp_or_kick_land() -> void:
 
 
 func _punch_land() -> void:
-	var accuracy := ACCURACY
 	var landed := false
 	var hits := _in_fist()
 	for r in hits:
@@ -1379,7 +1430,7 @@ func _punch_land() -> void:
 			continue  # swung and missed
 		landed = true
 		var quality := minf(float(hits[r]), float(PUNCH_FULL_HITBOXES)) / float(PUNCH_FULL_HITBOXES)
-		r.take_damage(MAX_HP * PUNCH_MAX_FRAC * quality, "punch", self, hits[r])
+		r.take_damage(MAX_HP * PUNCH_MAX_FRAC * quality * dmg_mult, "punch", self, hits[r])
 		# every landed punch sends them sprawling; the roll decides whether it's a flop or a proper floor
 		var floored := rng.randf() < PUNCH_KNOCKDOWN_CHANCE * quality
 		var victim: Robot = r
@@ -1388,6 +1439,8 @@ func _punch_land() -> void:
 		away = away.normalized() if away.length_squared() > 0.01 else -global_transform.basis.z
 		var impulse: Vector3 = away * (10.0 + 26.0 * quality) + Vector3(0, 4.0 + 5.0 * quality, 0)
 		victim.knock_down(PUNCH_KNOCKDOWN_TIME if floored else PUNCH_FLOP_TIME, self, "punch", impulse)
+	if landed:
+		_sfx("thud", randf_range(1.0, 1.2), -2.0)
 	punched.emit(self, landed)
 	if personality.get_trait("caution") >= 0.8 and _escape_open():
 		_flee_timer = 1.6  # hit and run (a trapped coward stays and fights)
@@ -1402,7 +1455,8 @@ func notice_punch(attacker: Robot) -> void:
 	if not _can_see(attacker.global_position + Vector3(0, 1.2, 0)):
 		return
 	var caution := personality.get_trait("caution")
-	if rng.randf() > 0.15 + 0.6 * caution:
+	# quick reflexes spot a wind-up that a slow robot walks straight into
+	if rng.randf() > clampf((0.15 + 0.6 * caution) / react_mult, 0.05, 0.97):
 		return
 	var from := global_position - attacker.global_position
 	from.y = 0.0
@@ -1415,6 +1469,13 @@ func notice_punch(attacker: Robot) -> void:
 	action = "dodge"
 	has_face_point = true
 	face_point = attacker.global_position
+
+
+## Everything audible goes through here so a headless sim stays silent and the null checks
+## live in one place.
+func _sfx(cue: String, pitch := 1.0, vol_db := 0.0) -> void:
+	if manager != null and manager.sfx != null:
+		manager.sfx.play(cue, global_position, pitch, vol_db)
 
 
 func take_damage(amount: float, source: String, attacker: Robot, hitbox_count: int) -> void:
@@ -1458,6 +1519,7 @@ func knock_down(duration: float, by: Robot, source: String, impulse: Vector3 = V
 			if away.length_squared() > 0.01:
 				shove += away.normalized() * (45.0 if source == "rock" else 22.0)
 	if was_up:
+		_sfx("thud", randf_range(0.7, 0.85), -3.0)   # the body hitting the floor
 		_spawn_ragdoll()
 		# hitboxes ride the (now invisible) rig so a floored robot is still below the fist box
 		if _body_tween != null and _body_tween.is_valid():
@@ -1517,6 +1579,7 @@ func _dance(t: float) -> void:
 ## Join the victory celebration: run to the formation spot, dance with the team, then
 ## visit the fallen. A winner still on the floor gets up first and hurries along.
 func cheer(spot: Vector3, corpses: Array[Robot]) -> void:
+	_sfx("cheer", randf_range(0.95, 1.05), -4.0)
 	if not alive:
 		return
 	celebrating = true
@@ -1566,11 +1629,11 @@ func _walk_to(target: Vector3, _delta: float, stop_dist: float) -> bool:
 	if _walk_detour > 0.0:
 		_walk_detour -= _delta
 		dir = (dir * 0.3 + _walk_detour_dir).normalized()  # skirting a block or a teammate
-	velocity = dir * SPEED * 0.9
+	velocity = dir * move_speed * 0.9
 	var before := global_position
 	move_and_slide()
 	global_position.y = 0.0
-	if before.distance_to(global_position) < SPEED * 0.9 * _delta * 0.35:
+	if before.distance_to(global_position) < move_speed * 0.9 * _delta * 0.35:
 		_walk_stuck += _delta
 		if _walk_stuck > 0.25 and _walk_detour <= 0.0:
 			_walk_detour = 0.7
@@ -1742,6 +1805,7 @@ func _flash() -> void:
 
 func _die() -> void:
 	alive = false
+	_sfx("death", randf_range(0.9, 1.1))
 	action = "dead"
 	move_dir = Vector3.ZERO
 	velocity = Vector3.ZERO

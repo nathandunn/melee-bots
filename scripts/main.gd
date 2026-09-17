@@ -26,6 +26,10 @@ func _ready() -> void:
 	manager = MatchManager.new()
 	manager.world = self
 	manager.arena = arena
+	# every sound is synthesised at startup; headless builds it as a no-op and stays quiet
+	var sfx := Sfx.new()
+	add_child(sfx)
+	manager.sfx = sfx
 	manager.match_ended.connect(_on_match_ended)
 	manager.celebration_finished.connect(_on_celebration_finished)
 	manager.dance_started.connect(_on_celebration_finished)  # the stats come up as the dance starts
@@ -41,6 +45,23 @@ func _ready() -> void:
 		manager.team_preset_names[1] = args["blue"]
 	if args.has("seed"):
 		_base_seed = int(args["seed"])
+	# --loadout=cat:4,baby:4,rock:0 - set the armoury from the command line, so a sim can be
+	# pointed at one weapon and told to prove it works. Anything not named keeps its default.
+	if args.has("loadout"):
+		for pair in String(args["loadout"]).split(",", false):
+			var kv := pair.split(":", true, 1)
+			if kv.size() == 2 and manager.loadout.has(kv[0]):
+				manager.loadout[kv[0]] = maxi(int(kv[1]), 0)
+	if args.has("type"):
+		for t in 2:
+			manager.team_types[t] = RobotType.preset(args["type"])
+			manager.team_type_names[t] = args["type"]
+	if args.has("redtype"):
+		manager.team_types[0] = RobotType.preset(args["redtype"])
+		manager.team_type_names[0] = args["redtype"]
+	if args.has("bluetype"):
+		manager.team_types[1] = RobotType.preset(args["bluetype"])
+		manager.team_type_names[1] = args["bluetype"]
 
 	if headless:
 		manager.time_limit = float(args.get("cap", "300"))  # sims can't wait forever; real matches do
@@ -100,12 +121,22 @@ func _build_lighting() -> void:
 	add_child(env)
 
 
+## Command-line arguments after `--`, and on the web the query string standing in for them,
+## since a browser has no command line: index.html?loadout=cat:6,rock:0&redtype=Sniper does
+## the same as the matching --flags. Handy for pointing a screenshot at one weapon.
 func _parse_args(list: PackedStringArray) -> Dictionary:
 	var d := {}
 	for a in list:
 		if a.begins_with("--"):
 			var kv := a.substr(2).split("=", true, 1)
 			d[kv[0]] = kv[1] if kv.size() > 1 else "1"
+	if OS.has_feature("web"):
+		var raw = JavaScriptBridge.eval("window.location.search.slice(1)", true)
+		if raw != null:
+			for pair in String(raw).split("&", false):
+				var kv := pair.split("=", true, 1)
+				if kv[0] != "":
+					d[kv[0].uri_decode()] = (kv[1].uri_decode() if kv.size() > 1 else "1")
 	return d
 
 
